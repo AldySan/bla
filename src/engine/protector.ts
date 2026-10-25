@@ -65,6 +65,11 @@ export function protectTarget(options: ProtectionOptions): ProtectionResult {
   const prng = new SeededPrng(seed);
   const chaffPayloads = generateChaffPayloads(prng, intensity);
 
+  // Complete model validation/serialization before creating any output path.
+  const safetensorsResult = format === "model-safetensors"
+    ? protectSafetensorsBuffer(readFileSync(absInput), { intensity, seed })
+    : undefined;
+
   const beforeAudit = auditTarget(absInput);
 
   if (format !== "directory") {
@@ -279,10 +284,8 @@ export function protectTarget(options: ProtectionOptions): ProtectionResult {
     binarySectionsPatched = res.honeyTablesInjected + res.generatedTrapColumnsAdded;
     counteredVectors.add("sqlite-database-inspection");
   } else if (format === "model-safetensors") {
-    const rawModel = readFileSync(absInput);
-    const res = protectSafetensorsBuffer(rawModel, { intensity, seed });
+    const res = safetensorsResult!;
     writeFileSync(absOutput, res.buffer);
-    decoyFunctionsInjected = 16;
     chaffPayloadsEmbedded = res.chaffPayloadsEmbedded;
     binarySectionsPatched = res.triggeredJsonNestingBreaker ? 2 : 1;
     counteredVectors.add("model-artifact-inspection");

@@ -280,3 +280,26 @@ Issues and pull requests are welcome at [qybaihe/bla](https://github.com/qybaihe
 ## License
 
 [MIT](LICENSE)
+
+### Safetensors integrity boundary
+
+Safetensors rewriting validates the input before creating output paths and preserves
+all tensor descriptors, tensor data bytes, and existing string metadata (including
+colliding BLA metadata keys). The invalid top-level `_bla_nesting_breaker` payload is
+disabled at **every intensity**; `triggeredJsonNestingBreaker` remains in the API for
+compatibility and is always `false`. Previously generated malformed models are
+rejected, not repaired or replaced with synthetic weights.
+
+The local validator checks UTF-8/JSON, duplicate fields, string metadata, nonnegative
+safe-integer shapes/offsets, byte sizes, contiguous nonoverlapping tensor ranges,
+and complete data coverage. It follows the structural requirements in the
+[official Safetensors implementation](https://github.com/huggingface/safetensors/blob/main/safetensors/src/tensor.rs)
+and emits an 8-byte-aligned header. Its deliberately conservative supported dtype
+subset is `BOOL`, `U8`, `I8`, `U16`, `I16`, `F16`, `BF16`, `U32`, `I32`, `F32`, `U64`,
+`I64`, and `F64`. Other dtypes are reported as unsupported; this is not a claim that
+those models are invalid. Headers above 100 MB and integers beyond JavaScript's
+safe range are refused rather than silently rounded.
+
+These are structural and byte-preservation checks, **not** official-loader
+validation, model inference, or evidence of effectiveness against REA. The
+Safetensors benchmark's functional test remains `not-run`.

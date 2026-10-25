@@ -150,7 +150,7 @@ describe("Deep Vertical Shields (Runtime Deception, Electron Fuses, SQLite, AI M
     }
   });
 
-  it("protects Safetensors (.safetensors) AI model artifacts and trips >32 nesting caps", () => {
+  it("adds Safetensors metadata without invalid top-level nesting payloads", () => {
     const rawSafetensors = buildSafetensorsBuffer({
       attn_weights: { dtype: "F32", shape: [2, 2], data_offsets: [0, 16] },
     });
@@ -164,11 +164,11 @@ describe("Deep Vertical Shields (Runtime Deception, Electron Fuses, SQLite, AI M
       intensity: "bankrupt",
       seed: "safetensors-seed",
     });
-    expect(protSt.triggeredJsonNestingBreaker).toBe(true);
+    expect(protSt.triggeredJsonNestingBreaker).toBe(false);
 
     const afterSt = inspectModelBuffer(protSt.buffer);
     expect(afterSt.validModel).toBe(true);
-    expect(afterSt.exceedsReaNestingLimit).toBe(true);
+    expect(afterSt.exceedsReaNestingLimit).toBe(false);
     expect(afterSt.blaProtected).toBe(true);
 
 

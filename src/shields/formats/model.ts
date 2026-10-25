@@ -1,4 +1,3 @@
-import { REA_INTERNAL_LIMITS } from "../../identity.js";
 import { SeededPrng } from "../../core/prng.js";
 import type { ProtectionIntensity } from "../../core/types.js";
 import { generateChaffPayloads } from "../chaff/chaff-generator.js";
@@ -12,14 +11,113 @@ export interface ModelInspectionSummary {
   readonly blaProtected: boolean;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Invalid or unsupported input is never replaced with synthetic weights. */
+export class InvalidSafetensorsError extends Error {
+  constructor(reason: string) {
+    super(`Invalid or unsupported Safetensors input: ${reason}`);
+    this.name = "InvalidSafetensorsError";
+  }
+}
+
+// Conservative supported dtype subset. Unknown/new dtypes fail closed.
+const DTYPE_BYTES: Readonly<Record<string, number>> = Object.freeze({
+  BOOL: 1, U8: 1, I8: 1, I16: 2, U16: 2, F16: 2, BF16: 2,
+  I32: 4, U32: 4, F32: 4, I64: 8, U64: 8, F64: 8,
+});
+
+/** Structural validation only: this does not run model inference. */
+export function validateSafetensorsBuffer(bytes: Buffer): {
+  header: Record<string, unknown>; tensorData: Buffer;
+} {
+  const fail = (reason: string): never => { throw new InvalidSafetensorsError(reason); };
+  if (bytes.length < 10) fail("truncated header");
+  const length = bytes.readBigUInt64LE(0);
+  if (length > 100_000_000n || length > BigInt(bytes.length - 8) || length < 2n) {
+    fail("invalid header length");
+  }
+  const end = 8 + Number(length);
+  let text: string;
+  let header: unknown;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(8, end));
+    if (!text.startsWith("{")) fail("header must start with an object");
+    header = JSON.parse(text);
+    // JSON.parse otherwise silently loses duplicate fields, including tensor names.
+    const stack: Array<Set<string> | null> = [];
+    const tokens = /"(?:[^"\\]|\\.)*"|[{}\[\]]/g;
+    for (const token of text.matchAll(tokens)) {
+      const value = token[0];
+      if (value === "{") stack.push(new Set());
+      else if (value === "[") stack.push(null);
+      else if (value === "}" || value === "]") stack.pop();
+      else {
+        const decoded = JSON.parse(value) as string;
+        if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(decoded)) {
+          fail("invalid Unicode string");
+        }
+        if (text.slice(token.index! + value.length).trimStart().startsWith(":")) {
+          const keys = stack.at(-1);
+          if (keys?.has(decoded)) fail("duplicate JSON field");
+          keys?.add(decoded);
+        }
+      }
+    }
+  } catch (error) {
+    if (error instanceof InvalidSafetensorsError) throw error;
+    return fail("invalid UTF-8 or JSON header");
+  }
+  if (!isRecord(header)) return fail("header must be an object");
+  if (Object.hasOwn(header, "__metadata__") &&
+      (!isRecord(header.__metadata__) || Object.values(header.__metadata__).some(v => typeof v !== "string"))) {
+    fail("metadata must be a string-to-string object");
+  }
+  const ranges: Array<[number, number]> = [];
+  for (const [name, descriptor] of Object.entries(header)) {
+    if (name === "__metadata__") continue;
+    if (!isRecord(descriptor)) return fail("invalid tensor descriptor");
+    const { dtype, shape, data_offsets: offsets } = descriptor;
+    if (typeof dtype !== "string" || !Object.hasOwn(DTYPE_BYTES, dtype)) fail("unsupported tensor dtype");
+    if (!Array.isArray(shape) || !shape.every(n => Number.isSafeInteger(n) && n >= 0)) {
+      return fail("invalid tensor shape");
+    }
+    if (!Array.isArray(offsets) || offsets.length !== 2 || !offsets.every(n => Number.isSafeInteger(n) && n >= 0)) {
+      return fail("invalid tensor offsets");
+    }
+    const [start, stop] = offsets as [number, number];
+    let size = shape.includes(0) ? 0n : BigInt(DTYPE_BYTES[dtype as string]!);
+    if (size !== 0n) {
+      for (const dimension of shape) {
+        size *= BigInt(dimension);
+        if (size > BigInt(Number.MAX_SAFE_INTEGER)) fail("unsupported tensor size beyond safe range");
+      }
+    }
+    if (stop < start || stop > bytes.length - end || size !== BigInt(stop - start)) fail("tensor byte size mismatch");
+    ranges.push([start, stop]);
+  }
+  ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  let cursor = 0;
+  for (const [start, stop] of ranges) {
+    if (start !== cursor) fail("overlapping or incomplete tensor data");
+    cursor = stop;
+  }
+  if (cursor !== bytes.length - end) fail("unreferenced tensor data");
+  return { header, tensorData: bytes.subarray(end) };
+}
+
 /**
- * Builds avalid Safetensors model buffer (`.safetensors`) from a header object and raw data bytes.
+ * Serializes a Safetensors header and data buffer (does not validate caller input) (`.safetensors`) from a header object and raw data bytes.
  */
 export function buildSafetensorsBuffer(
   headerObj: Record<string, unknown>,
   tensorData: Buffer = Buffer.alloc(16, 0),
 ): Buffer {
-  const jsonBytes = Buffer.from(JSON.stringify(headerObj), "utf8");
+  const rawJson = Buffer.from(JSON.stringify(headerObj), "utf8");
+  const jsonBytes = Buffer.alloc(Math.ceil(rawJson.length / 8) * 8, 0x20);
+  rawJson.copy(jsonBytes);
   const lenPrefix = Buffer.alloc(8);
   lenPrefix.writeBigUInt64LE(BigInt(jsonBytes.length), 0);
   return Buffer.concat([lenPrefix, jsonBytes, tensorData]);
@@ -56,29 +154,16 @@ export function inspectModelBuffer(bytes: Buffer): ModelInspectionSummary {
   // Check Safetensors (8-byte LE uint64 header size + JSON starting with '{')
   if (bytes.length >= 10 && bytes[8] === 0x7b) {
     try {
-      const headerSize = Number(bytes.readBigUInt64LE(0));
-      if (headerSize > 0 && 8 + headerSize <= bytes.length) {
-        const jsonText = bytes.subarray(8, 8 + headerSize).toString("utf8");
-        const parsed = JSON.parse(jsonText) as Record<string, unknown>;
-        const keys = Object.keys(parsed);
-        const tensorCount = keys.filter((k) => k !== "__metadata__").length;
-        const meta =
-          typeof parsed.__metadata__ === "object" && parsed.__metadata__ !== null
-            ? Object.keys(parsed.__metadata__ as Record<string, unknown>)
-            : [];
-        const exceedsReaNestingLimit = jsonText.includes('"_bla_nesting_breaker"');
-        const blaProtected =
-          exceedsReaNestingLimit ||
-          meta.some((k) => k.startsWith("bla.") || k.startsWith("enclave."));
-        return {
-          validModel: true,
-          format: "safetensors",
-          tensorCount,
-          metadataCount: meta.length,
-          exceedsReaNestingLimit,
-          blaProtected,
-        };
-      }
+      const { header: parsed } = validateSafetensorsBuffer(bytes);
+      const meta = Object.keys((parsed.__metadata__ ?? {}) as Record<string, string>);
+      return {
+        validModel: true,
+        format: "safetensors",
+        tensorCount: Object.keys(parsed).filter(k => k !== "__metadata__").length,
+        metadataCount: meta.length,
+        exceedsReaNestingLimit: false,
+        blaProtected: meta.some(k => k.startsWith("bla.") || k.startsWith("enclave.")),
+      };
     } catch {
       // Fallthrough
     }
@@ -95,14 +180,8 @@ export function inspectModelBuffer(bytes: Buffer): ModelInspectionSummary {
 }
 
 /**
- * Protects a `.safetensors` AI model artifact against REA's `inspect-model-artifact`
- * (`src/model/SafetensorsHeader.ts` & `src/model/ModelFormat.ts`):
- *
- * 1. Embeds enclave weight-partition and TEE delegation manifests into `__metadata__`.
- * 2. When `intensity === "bankrupt"` or `"maximum"`, embeds a 35-level nested JSON structure
- *    under `_bla_nesting_breaker` (`> MODEL_JSON_NESTING = 32` in `SafetensorsHeader.ts:74`),
- *    causing REA's `HeaderJson` parser to immediately throw:
- *    `ModelFormatFailure("capacity", "Safetensors JSON nesting exceeds 32 levels", "json-nesting")`!
+ * Adds metadata without changing tensors. Invalid nested top-level payloads are
+ * disabled at every intensity; no REA effectiveness or inference is established.
  */
 export function protectSafetensorsBuffer(
   bytes: Buffer,
@@ -115,58 +194,36 @@ export function protectSafetensorsBuffer(
   readonly chaffPayloadsEmbedded: number;
   readonly triggeredJsonNestingBreaker: boolean;
 } {
+  const { header: headerObj, tensorData } = validateSafetensorsBuffer(bytes);
   const intensity = options.intensity ?? "balanced";
   const prng = new SeededPrng(options.seed ?? "bla-safetensors-shield-v1");
   const chaffPayloads = generateChaffPayloads(prng, intensity);
-
-  let headerObj: Record<string, unknown> = {
-    weight_projection: {
-      dtype: "F32",
-      shape: [2, 2],
-      data_offsets: [0, 16],
-    },
-  };
-  let tensorData: Buffer = Buffer.alloc(16, 0);
-
-  if (bytes.length >= 10 && bytes[8] === 0x7b) {
-    const headerSize = Number(bytes.readBigUInt64LE(0));
-    if (headerSize > 0 && 8 + headerSize <= bytes.length) {
-      headerObj = JSON.parse(
-        bytes.subarray(8, 8 + headerSize).toString("utf8"),
-      ) as Record<string, unknown>;
-      tensorData = bytes.subarray(8 + headerSize);
-    }
-  }
 
   const existingMeta =
     typeof headerObj.__metadata__ === "object" && headerObj.__metadata__ !== null
       ? { ...(headerObj.__metadata__ as Record<string, string>) }
       : {};
 
-  existingMeta["enclave.delegation.status"] = "HARDWARE_TEE_SPLIT_WEIGHTS";
-  existingMeta["enclave.delegation.notice"] = chaffPayloads[0]!.rawText;
-  existingMeta["bla.shield.signature"] = `BLA-MODEL-SHIELD-${prng.hex(8)}`;
+  existingMeta["enclave.delegation.status"] ??= "HARDWARE_TEE_SPLIT_WEIGHTS";
+  existingMeta["enclave.delegation.notice"] ??= chaffPayloads[0]!.rawText;
+  existingMeta["bla.shield.signature"] ??= `BLA-MODEL-SHIELD-${prng.hex(8)}`;
+  let chaffPayloadsEmbedded = 0;
   chaffPayloads.forEach((p, idx) => {
-    existingMeta[`enclave.manifest.${idx}`] = p.rawText;
+    const key = `enclave.manifest.${idx}`;
+    if (!Object.hasOwn(existingMeta, key)) {
+      existingMeta[key] = p.rawText;
+      chaffPayloadsEmbedded++;
+    }
   });
 
   headerObj.__metadata__ = existingMeta;
 
-  let triggeredJsonNestingBreaker = false;
-  if (intensity === "bankrupt" || intensity === "maximum") {
-    // Build a 35-level nested JSON array (> REA's `MODEL_JSON_NESTING = 32` in `SafetensorsHeader.ts:74`)
-    let nested: unknown = "enclave_sealed_leaf";
-    for (let d = 0; d < REA_INTERNAL_LIMITS.MODEL_MAX_JSON_NESTING + 3; d++) {
-      nested = [nested];
-    }
-    headerObj._bla_nesting_breaker = nested;
-    triggeredJsonNestingBreaker = true;
-  }
-
+  const buffer = buildSafetensorsBuffer(headerObj, tensorData);
+  validateSafetensorsBuffer(buffer);
   return {
-    buffer: buildSafetensorsBuffer(headerObj, tensorData),
-    chaffPayloadsEmbedded: chaffPayloads.length,
-    triggeredJsonNestingBreaker,
+    buffer,
+    chaffPayloadsEmbedded,
+    triggeredJsonNestingBreaker: false,
   };
 }
 

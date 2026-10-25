@@ -51,6 +51,8 @@ export {
 } from "./shields/formats/sqlite.js";
 export {
   buildSafetensorsBuffer,
+  validateSafetensorsBuffer,
+  InvalidSafetensorsError,
   inspectModelBuffer,
   protectSafetensorsBuffer,
   protectGgufBuffer,
