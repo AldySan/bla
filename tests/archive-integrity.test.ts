@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { protectZipOrApkBuffer, readZipEntries, UnsupportedApkProtectionError, UnsupportedArchiveError, writeZipArchive } from "../src/shields/formats/archive.js";
+import { protectZipOrApkBuffer, readZipEntries, UnsupportedApkProtectionError, UnsupportedArchiveError, validateZipProtectionInput, writeZipArchive } from "../src/shields/formats/archive.js";
 import { protectTarget } from "../src/engine/protector.js";
 
 const fixture = () => writeZipArchive([{ name: "file.txt", data: Buffer.from("harmless content ".repeat(8)) }]);
@@ -74,6 +74,35 @@ describe("archive admission preserves bytes or fails closed", () => {
   it("refuses signed archives and duplicate names", () => {
     expect(() => protectZipOrApkBuffer(writeZipArchive([{ name: "META-INF/TEST.RSA", data: Buffer.from("not a real signature") }]))).toThrow(/signing-aware/);
     expect(() => readZipEntries(writeZipArchive([{ name: "a", data: Buffer.from("1") }, { name: "a", data: Buffer.from("2") }]))).toThrow(/duplicate/);
+  });
+  it("reserves output entries below the classic ZIP sentinel before filesystem changes", () => {
+    const files = Array.from({ length: 65_526 }, (_, i) => ({ name: `f${i}`, data: Buffer.alloc(0) }));
+    const accepted = writeZipArchive(files.slice(0, -1));
+    expect(validateZipProtectionInput(accepted)).toHaveLength(65_525);
+    const rejected = writeZipArchive(files); const original = Buffer.from(rejected);
+    expect(readZipEntries(rejected)).toHaveLength(65_526);
+    expect(() => protectZipOrApkBuffer(rejected, { intensity: "stealth" })).toThrow(/entry-count capacity/);
+    expect(rejected.equals(original)).toBe(true);
+    const dir = mkdtempSync(join(tmpdir(), "bla-archive-count-")); dirs.push(dir);
+    const input = join(dir, "input.zip"); const output = join(dir, "output.zip");
+    writeFileSync(input, rejected); writeFileSync(output, "existing");
+    expect(() => protectTarget({ inputPath: input, outputPath: output })).toThrow(/entry-count capacity/);
+    expect(readFileSync(output, "utf8")).toBe("existing");
+    expect(() => protectTarget({ inputPath: input, outputPath: join(dir, "new", "output.zip") })).toThrow(/entry-count capacity/);
+    expect(existsSync(join(dir, "new"))).toBe(false);
+    expect(readFileSync(input).equals(original)).toBe(true);
+  });
+  it.each(["assets", "assets/enclave", "enclave"])("refuses reserved parent file %s without modification", (name) => {
+    const input = writeZipArchive([{ name, data: Buffer.from("original regular file") }]);
+    const original = Buffer.from(input);
+    expect(() => protectZipOrApkBuffer(input)).toThrow(/reserved output namespace/);
+    expect(input).toEqual(original);
+    const dir = mkdtempSync(join(tmpdir(), "bla-archive-parent-")); dirs.push(dir);
+    const file = join(dir, "input.zip"); writeFileSync(file, input);
+    expect(() => protectTarget({ inputPath: file, inPlace: true })).toThrow(/reserved output namespace/);
+    expect(readFileSync(file)).toEqual(original);
+    expect(() => protectTarget({ inputPath: file, outputPath: join(dir, "new", "output.zip") })).toThrow(/reserved output namespace/);
+    expect(existsSync(join(dir, "new"))).toBe(false);
   });
   it.each(["bad.zip", "unsigned.apk", "renamed.zip"])("retains input/output and creates no directory for %s", (name) => {
     const dir = mkdtempSync(join(tmpdir(), "bla-archive-")); dirs.push(dir);

@@ -24,9 +24,13 @@ unsupported encodings/compression, prepended executables, gaps and signing block
 are unsupported. `readZipEntries` also enforces this subset; therefore auditing
 unsupported archives fails explicitly instead of returning a partial inventory.
 
+Protection reserves nine output entries below the classic ZIP count sentinel, so
+inputs may contain at most 65,525 entries regardless of intensity.
+
 Protection additionally refuses AndroidManifest.xml, signature entries under
 META-INF (`.SF`, `.RSA`, `.DSA`, `.EC`) and existing entries in the reserved
-`assets/enclave/` or `enclave/` output namespaces. These checks are conservative
+`assets/enclave/` or `enclave/` output namespaces, including regular files named
+exactly `assets`, `assets/enclave`, or `enclave` that would collide with new descendants. These checks are conservative
 admission rules, not a universal signature detector or signature verification.
 
 ## APKs and failure behavior

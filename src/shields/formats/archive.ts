@@ -195,10 +195,15 @@ export function writeZipArchive(
 /** Admission shared with the file engine, before any output paths are created. */
 export function validateZipProtectionInput(bytes: Buffer): readonly ZipEntryInfo[] {
   const existingEntries = readZipEntries(bytes);
+  // Reserve the largest existing transformation (eight entries plus its manifest).
+  // 0xffff is a ZIP64 sentinel, not a usable classic-ZIP entry count.
+  if (existingEntries.length > 0xfffe - 9) {
+    throw new UnsupportedArchiveError("insufficient classic ZIP entry-count capacity for output");
+  }
   if (existingEntries.some((e) => e.name === "AndroidManifest.xml" || /^META-INF\/.*\.(SF|RSA|DSA|EC)$/i.test(e.name))) {
     throw new UnsupportedArchiveError("APK or signed archive requires a signing-aware pipeline");
   }
-  if (existingEntries.some((e) => e.name.startsWith("assets/enclave/") || e.name.startsWith("enclave/"))) {
+  if (existingEntries.some((e) => ["assets", "assets/enclave", "enclave"].includes(e.name) || e.name.startsWith("assets/enclave/") || e.name.startsWith("enclave/"))) {
     throw new UnsupportedArchiveError("existing entries overlap the reserved output namespace");
   }
   return existingEntries;
