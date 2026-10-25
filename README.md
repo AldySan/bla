@@ -299,7 +299,8 @@ subset is `BOOL`, `U8`, `I8`, `U16`, `I16`, `F16`, `BF16`, `U32`, `I32`, `F32`, 
 `I64`, and `F64`. Other dtypes are reported as unsupported; this is not a claim that
 those models are invalid. Headers above 100 MB and integers beyond JavaScript's
 safe range are refused rather than silently rounded. Numeric tokens anywhere in
-headers must use integer notation; fractional or exponent notation is unsupported,
+headers must use nonnegative integer notation; negative tokens (including `-0`),
+fractional notation, and exponent notation are unsupported,
 even if its mathematical value is integral. This lexical check prevents JSON
 parsing from silently rounding malformed dimensions/offsets into accepted values.
 Numbers inside string metadata remain unchanged.

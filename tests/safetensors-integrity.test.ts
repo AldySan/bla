@@ -73,15 +73,15 @@ describe("Safetensors format and tensor preservation (not inference)", () => {
     expect(inspectModelBuffer(bytes).validModel).toBe(false);
     expect(bytes).toEqual(snapshot);
   });
-  it.each(["1.0000000000000001", "1.5", "1e0", "1e-999", "1e999", "9007199254740993"])(
+  it.each(["1.0000000000000001", "1.5", "1e0", "1e-999", "1e999", "9007199254740993", "-0"])(
     "rejects unsupported numeric token %s before rounded values can be accepted", token => {
       const bytes = rawHeader(`{"x":{"dtype":"F32","shape":[${token}],"data_offsets":[0,4]}}`, data.subarray(0, 4));
       expect(() => protectSafetensorsBuffer(bytes)).toThrow(/unsupported numeric token/);
       expect(inspectModelBuffer(bytes).validModel).toBe(false);
     },
   );
-  it("also rejects fractional offset notation that rounds to an integer", () => {
-    const bytes = rawHeader('{"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4.0000000000000001]}}', data.subarray(0, 4));
+  it.each(["4.0000000000000001", "-0"])("rejects unsupported offset token %s", token => {
+    const bytes = rawHeader(`{"x":{"dtype":"F32","shape":[1],"data_offsets":[${token === "-0" ? "-0,4" : `0,${token}`}]}}`, data.subarray(0, 4));
     expect(() => protectSafetensorsBuffer(bytes)).toThrow(/unsupported numeric token/);
   });
   it("explicitly reports unsupported dtypes rather than rewriting them", () => {

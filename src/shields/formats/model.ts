@@ -58,9 +58,8 @@ export function validateSafetensorsBuffer(bytes: Buffer): {
         // JSON.parse rounds before Number.isSafeInteger can inspect the value.
         // The supported header subset requires integer lexical tokens, not
         // fractions/exponents even when they would round to an integer.
-        if (!/^-?\d+$/.test(value) || BigInt(value) > BigInt(Number.MAX_SAFE_INTEGER) ||
-            BigInt(value) < BigInt(Number.MIN_SAFE_INTEGER)) {
-          fail("unsupported numeric token: require safe integer notation");
+        if (!/^\d+$/.test(value) || BigInt(value) > BigInt(Number.MAX_SAFE_INTEGER)) {
+          fail("unsupported numeric token: require nonnegative safe integer notation");
         }
       } else {
         const decoded = JSON.parse(value) as string;
