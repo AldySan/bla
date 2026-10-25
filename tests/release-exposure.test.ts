@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,7 +6,7 @@ import { inspectReleaseExposure } from "../src/core/release-exposure.js";
 import { runCli } from "../src/cli.js";
 
 const dirs: string[] = [];
-const temp = () => { const dir = mkdtempSync(join(tmpdir(), "bla-release-")); dirs.push(dir); return dir; };
+const temp = () => { const dir = realpathSync(mkdtempSync(join(tmpdir(), "bla-release-"))); dirs.push(dir); return dir; };
 const map = JSON.stringify({ version: 3, sources: ["harmless-example.ts"], sourcesContent: ["export const example = 1;"], names: [], mappings: "" });
 afterEach(() => { vi.restoreAllMocks(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
