@@ -23,7 +23,7 @@ import { packAsarBuffer, unpackAsarBuffer, type VirtualAsarFile } from "../shiel
 import { protectWasmBinary } from "../shields/formats/wasm.js";
 import { protectPythonPycBuffer, protectPythonSource } from "../shields/formats/python.js";
 import { protectNativeBinary } from "../shields/formats/native.js";
-import { protectZipOrApkBuffer } from "../shields/formats/archive.js";
+import { protectZipOrApkBuffer, validateZipProtectionInput, UnsupportedApkProtectionError } from "../shields/formats/archive.js";
 import { protectSqliteBuffer } from "../shields/formats/sqlite.js";
 import { UnsupportedGgufProtectionError, protectSafetensorsBuffer } from "../shields/formats/model.js";
 import { protectAndroidDexBuffer, protectIl2cppMetadataBuffer } from "../shields/formats/mobile-game.js";
@@ -55,10 +55,13 @@ export function protectTarget(options: ProtectionOptions): ProtectionResult {
     throw new UnsupportedGgufProtectionError();
   }
 
+  if (format === "android-apk") throw new UnsupportedApkProtectionError();
   const absOutput = resolve(
     options.outputPath ?? deriveDefaultOutputPath(absInput, options.inPlace),
   );
   assertSafeOutputPath(absInput, absOutput, format === "directory", options.inPlace);
+  if (format === "archive-zip") validateZipProtectionInput(readFileSync(absInput));
+
 
   const intensity = options.intensity ?? "balanced";
   const seed = String(options.seed ?? "bla-shield-seed-v1");
@@ -305,12 +308,12 @@ export function protectTarget(options: ProtectionOptions): ProtectionResult {
     chaffPayloadsEmbedded = res.chaffPayloadsEmbedded;
     binarySectionsPatched = 1;
     counteredVectors.add("android-dex-il2cpp-inspection");
-  } else if (format === "archive-zip" || format === "android-apk") {
+  } else if (format === "archive-zip") {
     const rawZip = readFileSync(absInput);
     const res = protectZipOrApkBuffer(rawZip, {
       intensity,
       seed,
-      isApk: format === "android-apk",
+      isApk: false,
     });
     writeFileSync(absOutput, res.buffer);
     decoyFunctionsInjected = 12;

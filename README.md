@@ -174,7 +174,8 @@ BLA requires Node.js 22.x (22.13.0 or newer) or Node.js 24+ and npm. All shields
 | Python & `.pyc`         | Injects Python tarpit state machines into `.py` & `TYPE_ASCII` marshal chaff into `.pyc` pools    | `bla protect module.pyc` · Built-in CPython 3.7–3.14 `.pyc` header & marshal framing shield           |
 | SQLite databases        | Injects 3 enclave honey tables with `GENERATED ALWAYS AS (bla_enclave_unseal(...)) VIRTUAL` traps | `bla protect data.sqlite` · application compatibility must be tested independently |
 | Model artifacts         | Safetensors metadata transformation; GGUF protection is disabled to prevent tensor data loss | `bla protect weights.gguf` fails without writing output; GGUF inspection remains available |
-| Android DEX & APKs      | Injects `Lcom/enclave/sgx/...` decoy classes into `classes.dex` and recomputes SHA-1 & Adler32    | `bla protect classes.dex` or `app.apk` · Valid Dalvik/ART verification; pollutes JADX/JEB class trees |
+| Android DEX & APKs      | DEX descriptor transformation; **APK protection is unsupported** pending a signing-aware pipeline | `bla protect app.apk` refuses without modifying input or existing output; DEX runtime compatibility is not established |
+| ZIP archives | Only a restricted classic, metadata-free ZIP subset can be rewritten | Unsupported features fail closed; see [archive admission policy](docs/archive-integrity.md) |
 | Unity IL2CPP metadata   | Appends enclave bridge metadata and method-topology tarpits to `global-metadata.dat` (`0xFAB11BAF`) | `bla protect global-metadata.dat` · Pollutes REA `inspect_il2cpp_metadata` type/method recovery       |
 | C / C++ / Rust / Go src | Generates compile-time `bla_shield.h`, `bla_shield.rs`, or `bla_shield.go` with `used, noinline` tarpits | `bla emit-headers --lang c\|rust\|go` ·Compiles directly into Ghidra/Hopper/IDA decompiler views      |
 

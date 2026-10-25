@@ -65,6 +65,8 @@ export {
   protectIl2cppMetadataBuffer,
 } from "./shields/formats/mobile-game.js";
 export {
+  UnsupportedArchiveError,
+  UnsupportedApkProtectionError,
   readZipEntries,
   writeZipArchive,
   protectZipOrApkBuffer,

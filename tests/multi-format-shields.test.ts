@@ -183,7 +183,7 @@ describe("Multi-Format Shields (WASM, Python, Native ELF/Mach-O/PE, C/Rust/Go He
     expect(goHeader.content).toContain("func BlaEnclaveTarpit0");
   });
 
-  it("protects ZIP and Android APK archives while preserving existing entries", () => {
+  it("protects supported minimal ZIP archives while preserving existing entries", () => {
     const rawZip = writeZipArchive([
       {
         name: "assets/index.js",
@@ -201,7 +201,7 @@ describe("Multi-Format Shields (WASM, Python, Native ELF/Mach-O/PE, C/Rust/Go He
     const protectedZip = protectZipOrApkBuffer(rawZip, {
       intensity: "balanced",
       seed: "zip-test-seed",
-      isApk: true,
+      isApk: false,
     });
 
     expect(protectedZip.decoyEntriesInjected).toBe(5);

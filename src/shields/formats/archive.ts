@@ -31,55 +31,97 @@ function crc32(buf: Buffer): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-/**
- * Reads entries from a standard ZIP or Android APK archive (`PK\x03\x04`).
- */
+export class UnsupportedArchiveError extends Error {
+  constructor(reason: string) {
+    super(`ZIP input cannot be rewritten safely: ${reason}`);
+    this.name = "UnsupportedArchiveError";
+  }
+}
+
+export class UnsupportedApkProtectionError extends Error {
+  constructor() {
+    super("APK protection is unsupported: a signing-aware, integrity-preserving pipeline is required. Input and existing output are unchanged.");
+    this.name = "UnsupportedApkProtectionError";
+  }
+}
+
+/** Reads only the explicitly supported, metadata-free classic ZIP subset. */
 export function readZipEntries(bytes: Buffer): readonly ZipEntryInfo[] {
+  const reject = (reason: string): never => { throw new UnsupportedArchiveError(reason); };
+  const end = bytes.length - 22;
+  if (end < 0 || bytes.readUInt32LE(end) !== 0x06054b50) reject("missing terminal EOCD, comments, or trailing data");
+  if (bytes.readUInt16LE(end + 4) || bytes.readUInt16LE(end + 6) || bytes.readUInt16LE(end + 20)) reject("multi-disk archives or comments");
+  const count = bytes.readUInt16LE(end + 10);
+  const size = bytes.readUInt32LE(end + 12);
+  const start = bytes.readUInt32LE(end + 16);
+  if (count === 0xffff || size === 0xffffffff || start === 0xffffffff) reject("ZIP64");
+  if (bytes.readUInt16LE(end + 8) !== count || start + size !== end) reject("inconsistent central directory");
   const entries: ZipEntryInfo[] = [];
-  let offset = 0;
-
-  while (offset + 30 <= bytes.length) {
-    const sig = bytes.readUInt32LE(offset);
-    if (sig !== 0x04034b50) break; // Stop at Central Directory (`0x02014b50`)
-
-    const compressionMethod = bytes.readUInt16LE(offset + 8);
-    const compressedSize = bytes.readUInt32LE(offset + 18);
-    const uncompressedSize = bytes.readUInt32LE(offset + 22);
-    const nameLen = bytes.readUInt16LE(offset + 26);
-    const extraLen = bytes.readUInt16LE(offset + 28);
-
-    const nameStart = offset + 30;
-    const dataStart = nameStart + nameLen + extraLen;
+  const names = new Set<string>();
+  let local = 0;
+  let central = start;
+  let decodedTotal = 0;
+  for (let i = 0; i < count; i++) {
+    if (central + 46 > end || bytes.readUInt32LE(central) !== 0x02014b50) reject("truncated central directory");
+    const flags = bytes.readUInt16LE(central + 8);
+    const method = bytes.readUInt16LE(central + 10);
+    const crc = bytes.readUInt32LE(central + 16);
+    const compressedSize = bytes.readUInt32LE(central + 20);
+    const uncompressedSize = bytes.readUInt32LE(central + 24);
+    const nameLen = bytes.readUInt16LE(central + 28);
+    if (flags !== 0) reject("flags (including encryption, data descriptors, or alternate filename encodings)");
+    if (method !== 0 && method !== 8) reject("unsupported compression method");
+    if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff) reject("ZIP64 sizes");
+    if (bytes.readUInt16LE(central + 6) > 20 || bytes.readUInt32LE(central + 12) ||
+        bytes.readUInt16LE(central + 30) || bytes.readUInt16LE(central + 32) ||
+        bytes.readUInt16LE(central + 34) || bytes.readUInt16LE(central + 36) || bytes.readUInt32LE(central + 38)) {
+      reject("unsupported versions, timestamps, extra fields, comments, disks, or file attributes");
+    }
+    if (central + 46 + nameLen > end || bytes.readUInt32LE(central + 42) !== local) reject("entry offsets or names are inconsistent");
+    if (local + 30 > start || bytes.readUInt32LE(local) !== 0x04034b50) reject("missing local header or unrepresented data");
+    if (bytes.readUInt16LE(local + 4) !== bytes.readUInt16LE(central + 6) ||
+        bytes.readUInt16LE(local + 6) !== flags || bytes.readUInt16LE(local + 8) !== method ||
+        bytes.readUInt32LE(local + 10) || bytes.readUInt32LE(local + 14) !== crc ||
+        bytes.readUInt32LE(local + 18) !== compressedSize || bytes.readUInt32LE(local + 22) !== uncompressedSize ||
+        bytes.readUInt16LE(local + 26) !== nameLen || bytes.readUInt16LE(local + 28)) reject("local/central header mismatch or local metadata");
+    const dataStart = local + 30 + nameLen;
     const dataEnd = dataStart + compressedSize;
-    if (dataEnd > bytes.length) break;
-
-    const name = bytes.subarray(nameStart, nameStart + nameLen).toString("utf8");
-    const rawCompressed = bytes.subarray(dataStart, dataEnd);
-    let data = rawCompressed;
-    if (compressionMethod === 8 && compressedSize > 0) {
+    if (dataEnd > start) reject("truncated entry data");
+    const nameBytes = bytes.subarray(local + 30, dataStart);
+    if (!nameBytes.equals(bytes.subarray(central + 46, central + 46 + nameLen)) ||
+        nameBytes.length === 0 || nameBytes.some((v) => v < 32 || v > 126)) reject("unsupported or inconsistent filenames");
+    const name = nameBytes.toString("ascii");
+    if (names.has(name)) reject("duplicate filenames");
+    names.add(name);
+    decodedTotal += uncompressedSize;
+    if (uncompressedSize > 64 * 1024 * 1024 || decodedTotal > 256 * 1024 * 1024) reject("decoded size exceeds admission limits");
+    const compressed = bytes.subarray(dataStart, dataEnd);
+    let data: Buffer;
+    if (method === 0) {
+      if (compressedSize !== uncompressedSize) reject("stored entry size mismatch");
+      data = Buffer.from(compressed);
+    } else {
       try {
-        data = inflateRawSync(rawCompressed);
+        const result = inflateRawSync(compressed, { maxOutputLength: Math.max(1, uncompressedSize + 1), info: true });
+        // Node's info result reports consumed input, detecting trailing compressed garbage.
+        const decoded = result as unknown as { buffer: Buffer; engine: { bytesWritten: number } };
+        if (decoded.engine.bytesWritten !== compressedSize) reject("unconsumed compressed bytes");
+        data = decoded.buffer;
       } catch {
-        data = rawCompressed;
+        data = reject("invalid or incomplete deflate stream");
       }
     }
-
-    entries.push({
-      name,
-      compressedSize,
-      uncompressedSize,
-      compressionMethod,
-      data: Buffer.from(data),
-    });
-
-    offset = dataEnd;
+    if (data.length !== uncompressedSize || crc32(data) !== crc) reject("decoded size or CRC mismatch");
+    entries.push({ name, compressedSize, uncompressedSize, compressionMethod: method, data });
+    local = dataEnd;
+    central += 46 + nameLen;
   }
-
+  if (central !== end || local !== start) reject("unrepresented entries, signing structures, or gaps");
   return entries;
 }
 
 /**
- * Writes a valid ZIP / Android APK archive from a list of named file buffers.
+ * Writes a minimal ZIP archive from a list of named file buffers.
  */
 export function writeZipArchive(
   files: readonly { readonly name: string; readonly data: Buffer; readonly storeOnly?: boolean }[],
@@ -150,9 +192,21 @@ export function writeZipArchive(
   return Buffer.concat([...localHeaders, ...centralHeaders, eocd]);
 }
 
+/** Admission shared with the file engine, before any output paths are created. */
+export function validateZipProtectionInput(bytes: Buffer): readonly ZipEntryInfo[] {
+  const existingEntries = readZipEntries(bytes);
+  if (existingEntries.some((e) => e.name === "AndroidManifest.xml" || /^META-INF\/.*\.(SF|RSA|DSA|EC)$/i.test(e.name))) {
+    throw new UnsupportedArchiveError("APK or signed archive requires a signing-aware pipeline");
+  }
+  if (existingEntries.some((e) => e.name.startsWith("assets/enclave/") || e.name.startsWith("enclave/"))) {
+    throw new UnsupportedArchiveError("existing entries overlap the reserved output namespace");
+  }
+  return existingEntries;
+}
+
 /**
- * Protects a ZIP or Android APK archive against `rea inspect-artifact` and `rea inspect-android-package`
- * by injecting decoy enclave manifests, decoy DEX/native stub descriptors, and protecting embedded JS/WASM assets.
+ * Rewrites the admitted ZIP subset. APK rewriting is explicitly unsupported.
+ * Embedded executable assets are copied, not recursively transformed.
  */
 export function protectZipOrApkBuffer(
   bytes: Buffer,
@@ -166,11 +220,11 @@ export function protectZipOrApkBuffer(
   readonly decoyEntriesInjected: number;
   readonly chaffPayloadsEmbedded: number;
 } {
+  if (options.isApk) throw new UnsupportedApkProtectionError();
+  const existingEntries = validateZipProtectionInput(bytes);
   const intensity = options.intensity ?? "balanced";
   const prng = new SeededPrng(options.seed ?? "bla-archive-shield-v1");
   const chaffPayloads = generateChaffPayloads(prng, intensity);
-  const existingEntries = readZipEntries(bytes);
-
   const outputFiles: { name: string; data: Buffer; storeOnly?: boolean }[] = existingEntries.map((e) => ({
     name: e.name,
     data: e.data,
