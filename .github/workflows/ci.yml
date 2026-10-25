@@ -3,9 +3,12 @@ name: CI
 on:
   push:
     branches: [main]
+  # Include stacked pull requests targeting other fix branches.
   pull_request:
-    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -18,8 +21,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        node: [24]
+        os: [ubuntu-latest]
+        node: [22.13.0, 22.x, 24.x]
+        include:
+          - os: macos-latest
+            node: 24.x
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -33,7 +39,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: TypeScript typecheck
+      - name: Typecheck source and tests
         run: npm run typecheck
 
       - name: Build dist & CLI
@@ -50,3 +56,6 @@ jobs:
           node dist/cli.js --version
           node dist/cli.js doctor --json
           node dist/cli.js update --json
+
+      - name: Verify package contents without publishing
+        run: npm pack --dry-run
