@@ -73,7 +73,7 @@ describe("Safetensors format and tensor preservation (not inference)", () => {
     expect(inspectModelBuffer(bytes).validModel).toBe(false);
     expect(bytes).toEqual(snapshot);
   });
-  it.each(["1.0000000000000001", "1.5", "1e0", "1e-999", "1e999", "9007199254740993", "-0"])(
+  it.each(["1.0000000000000001", "1.5", "1e0", "1e-999", "1e999", "9007199254740993", "-0", "9".repeat(128)])(
     "rejects unsupported numeric token %s before rounded values can be accepted", token => {
       const bytes = rawHeader(`{"x":{"dtype":"F32","shape":[${token}],"data_offsets":[0,4]}}`, data.subarray(0, 4));
       expect(() => protectSafetensorsBuffer(bytes)).toThrow(/unsupported numeric token/);
@@ -108,7 +108,13 @@ describe("Safetensors malformed input no-write admission", () => {
       { inputPath: input }, { inputPath: input, inPlace: true },
       { inputPath: input, outputPath: input }, { inputPath: input, outputPath: output },
       { inputPath: input, outputPath: join(dir, "new", "out.safetensors") },
-    ]) expect(() => protectTarget(options)).toThrow(InvalidSafetensorsError);
+    ]) {
+      if (options.outputPath === input && !options.inPlace) {
+        expect(() => protectTarget(options)).toThrow(/Output refers to the input file/);
+      } else {
+        expect(() => protectTarget(options)).toThrow(InvalidSafetensorsError);
+      }
+    }
     expect(readFileSync(input)).toEqual(bad);
     expect(readFileSync(output)).toEqual(original);
     expect(existsSync(join(dir, "new"))).toBe(false);
