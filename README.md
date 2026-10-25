@@ -298,7 +298,11 @@ and emits an 8-byte-aligned header. Its deliberately conservative supported dtyp
 subset is `BOOL`, `U8`, `I8`, `U16`, `I16`, `F16`, `BF16`, `U32`, `I32`, `F32`, `U64`,
 `I64`, and `F64`. Other dtypes are reported as unsupported; this is not a claim that
 those models are invalid. Headers above 100 MB and integers beyond JavaScript's
-safe range are refused rather than silently rounded.
+safe range are refused rather than silently rounded. Numeric tokens anywhere in
+headers must use integer notation; fractional or exponent notation is unsupported,
+even if its mathematical value is integral. This lexical check prevents JSON
+parsing from silently rounding malformed dimensions/offsets into accepted values.
+Numbers inside string metadata remain unchanged.
 
 These are structural and byte-preservation checks, **not** official-loader
 validation, model inference, or evidence of effectiveness against REA. The

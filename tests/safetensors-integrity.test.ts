@@ -9,7 +9,7 @@ const header = {
   weights: { dtype: "F32", shape: [2], data_offsets: [0, 8] },
   bias: { dtype: "I16", shape: [2], data_offsets: [8, 12] },
   empty: { dtype: "F32", shape: [0], data_offsets: [12, 12] },
-  __metadata__: { description: "trained weights — 测试", "bla.shield.signature": "keep-original", "enclave.manifest.0": "keep-this-too" },
+  __metadata__: { description: "trained weights — 测试; 1.0000000000000001 1e999 9007199254740993", "bla.shield.signature": "keep-original", "enclave.manifest.0": "keep-this-too" },
 };
 const data = Buffer.alloc(12);
 data.writeFloatLE(1.25, 0);
@@ -72,6 +72,17 @@ describe("Safetensors format and tensor preservation (not inference)", () => {
     expect(() => protectSafetensorsBuffer(bytes)).toThrow(InvalidSafetensorsError);
     expect(inspectModelBuffer(bytes).validModel).toBe(false);
     expect(bytes).toEqual(snapshot);
+  });
+  it.each(["1.0000000000000001", "1.5", "1e0", "1e-999", "1e999", "9007199254740993"])(
+    "rejects unsupported numeric token %s before rounded values can be accepted", token => {
+      const bytes = rawHeader(`{"x":{"dtype":"F32","shape":[${token}],"data_offsets":[0,4]}}`, data.subarray(0, 4));
+      expect(() => protectSafetensorsBuffer(bytes)).toThrow(/unsupported numeric token/);
+      expect(inspectModelBuffer(bytes).validModel).toBe(false);
+    },
+  );
+  it("also rejects fractional offset notation that rounds to an integer", () => {
+    const bytes = rawHeader('{"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4.0000000000000001]}}', data.subarray(0, 4));
+    expect(() => protectSafetensorsBuffer(bytes)).toThrow(/unsupported numeric token/);
   });
   it("explicitly reports unsupported dtypes rather than rewriting them", () => {
     const model = buildSafetensorsBuffer({ x: { dtype: "F8_E4M3", shape: [12], data_offsets: [0, 12] } }, data);

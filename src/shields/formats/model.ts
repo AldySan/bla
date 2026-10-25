@@ -48,13 +48,21 @@ export function validateSafetensorsBuffer(bytes: Buffer): {
     header = JSON.parse(text);
     // JSON.parse otherwise silently loses duplicate fields, including tensor names.
     const stack: Array<Set<string> | null> = [];
-    const tokens = /"(?:[^"\\]|\\.)*"|[{}\[\]]/g;
+    const tokens = /"(?:[^"\\]|\\.)*"|[{}\[\]]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
     for (const token of text.matchAll(tokens)) {
       const value = token[0];
       if (value === "{") stack.push(new Set());
       else if (value === "[") stack.push(null);
       else if (value === "}" || value === "]") stack.pop();
-      else {
+      else if (!value.startsWith('"')) {
+        // JSON.parse rounds before Number.isSafeInteger can inspect the value.
+        // The supported header subset requires integer lexical tokens, not
+        // fractions/exponents even when they would round to an integer.
+        if (!/^-?\d+$/.test(value) || BigInt(value) > BigInt(Number.MAX_SAFE_INTEGER) ||
+            BigInt(value) < BigInt(Number.MIN_SAFE_INTEGER)) {
+          fail("unsupported numeric token: require safe integer notation");
+        }
+      } else {
         const decoded = JSON.parse(value) as string;
         if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(decoded)) {
           fail("invalid Unicode string");
